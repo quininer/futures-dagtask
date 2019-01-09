@@ -6,4 +6,4 @@ edition = "2018"
 
 [dependencies]
 futures = "0.1"
-petgraph = "0.4"
+indexmap = "1"
