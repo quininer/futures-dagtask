@@ -41,13 +41,13 @@ impl<N> Graph<N> {
     }
 
     pub fn walk(&mut self, index: Index) -> IntoIter<Index> {
-        self.map.get(&index)
-            .map(|(_, arr)| arr.clone().into_iter())
+        self.map.get_mut(&index)
+            .map(|(_, arr)| mem::replace(arr, Vec::new()).into_iter())
             .unwrap_or_else(|| Vec::new().into_iter())
     }
 }
 
-#[derive(Hash, Eq, PartialEq, Copy, Clone, Debug)]
+#[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Debug)]
 pub struct Index(u32);
 
 impl Index {

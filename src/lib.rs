@@ -32,11 +32,7 @@ impl<T> Default for TaskGraph<T> {
 
 impl<T: Future> TaskGraph<T> {
     pub fn add_task(&mut self, deps: &[Index], task: T) -> Index {
-        self.add_raw_task(deps, State::Pending { count: deps.len() | 1, task })
-    }
-
-    fn add_raw_task(&mut self, deps: &[Index], task: State<T>) -> Index {
-        let index = self.dag.add_node(task);
+        let index = self.dag.add_node(State::Pending { count: deps.len() | 1, task });
         if deps.is_empty() {
             self.dag.add_edge(self.root, index);
         } else {
@@ -73,21 +69,25 @@ pub struct AddTask<T: Future> {
 
 impl<T: Future> AddTask<T> {
     pub fn add_task(&self, deps: &[Index], task: T) -> Async<Index> {
-        match self.inner.poll_lock() {
-            Async::Ready(mut inner) => {
-                let (graph, pending) = &mut *inner;
-                let count = deps.iter()
-                    .filter(|&&i| graph.dag.contains(i))
-                    .count();
-                if count == 0 {
-                    let index = graph.add_raw_task(deps, State::Running);
-                    pending.push(IndexFuture::new(index, task));
-                    Async::Ready(index)
-                } else {
-                    Async::Ready(graph.add_raw_task(deps, State::Pending { count, task }))
-                }
-            },
-            Async::NotReady => Async::NotReady
+        let mut inner = match self.inner.poll_lock() {
+            Async::Ready(inner) => inner,
+            Async::NotReady => return Async::NotReady
+        };
+        let (graph, pending) = &mut *inner;
+
+        let count = deps.iter()
+            .filter(|&&i| graph.dag.contains(i))
+            .count();
+        if count == 0 {
+            let index = graph.dag.add_node(State::Running);
+            pending.push(IndexFuture::new(index, task));
+            Async::Ready(index)
+        } else {
+            let index = graph.dag.add_node(State::Pending { count, task });
+            for &parent in deps {
+                graph.dag.add_edge(parent, index);
+            }
+            Async::Ready(index)
         }
     }
 
