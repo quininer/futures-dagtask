@@ -42,8 +42,8 @@ impl<N> Graph<N> {
 
     pub fn walk(&mut self, index: Index) -> IntoIter<Index> {
         self.map.get(&index)
-                .map(|(_, arr)| arr.clone().into_iter())
-                .unwrap_or(Vec::new().into_iter())
+            .map(|(_, arr)| arr.clone().into_iter())
+            .unwrap_or(Vec::new().into_iter())
     }
 }
 

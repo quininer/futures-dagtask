@@ -32,11 +32,11 @@ impl<T> Default for TaskGraph<T> {
 
 impl<T: Future> TaskGraph<T> {
     pub fn add_task(&mut self, deps: &[Index], task: T) -> Index {
-        self.add_task_with_count(deps.len() | 1, deps, task)
+        self.add_raw_task(deps, State::Pending { count: deps.len() | 1, task })
     }
 
-    fn add_task_with_count(&mut self, count: usize, deps: &[Index], task: T) -> Index {
-        let index = self.dag.add_node(State::Pending { count, task });
+    fn add_raw_task(&mut self, deps: &[Index], task: State<T>) -> Index {
+        let index = self.dag.add_node(task);
         if deps.is_empty() {
             self.dag.add_edge(self.root, index);
         } else {
@@ -66,8 +66,8 @@ impl<T: Future> TaskGraph<T> {
     }
 }
 
-pub struct AddTask<T> {
-    inner: BiLock<(TaskGraph<T>, Vec<Index>)>,
+pub struct AddTask<T: Future> {
+    inner: BiLock<(TaskGraph<T>, Vec<IndexFuture<T>>)>,
     tx: oneshot::Sender<()>
 }
 
@@ -79,11 +79,13 @@ impl<T: Future> AddTask<T> {
                 let count = deps.iter()
                     .filter(|&&i| graph.dag.contains(i))
                     .count();
-                let index = graph.add_task_with_count(count, deps, task);
                 if count == 0 {
-                    pending.push(index);
+                    let index = graph.add_raw_task(deps, State::Running);
+                    pending.push(IndexFuture::new(index, task));
+                    Async::Ready(index)
+                } else {
+                    Async::Ready(graph.add_raw_task(deps, State::Pending { count, task }))
                 }
-                Async::Ready(index)
             },
             Async::NotReady => Async::NotReady
         }
@@ -95,7 +97,7 @@ impl<T: Future> AddTask<T> {
 }
 
 pub struct Execute<T: Future> {
-    inner: BiLock<(TaskGraph<T>, Vec<Index>)>,
+    inner: BiLock<(TaskGraph<T>, Vec<IndexFuture<T>>)>,
     queue: FuturesUnordered<IndexFuture<T>>,
     done: Vec<Index>,
     rx: oneshot::Receiver<()>
@@ -109,12 +111,8 @@ impl<T: Future> Execute<T> {
         };
         let (graph, pending) = &mut *inner;
 
-        while let Some(index) = pending.pop() {
-            if let Some(task_state) = graph.dag.get_node_mut(index) {
-                if let State::Pending { task, .. } = mem::replace(task_state, State::Running) {
-                    self.queue.push(IndexFuture::new(index, task));
-                }
-            }
+        while let Some(fut) = pending.pop() {
+            self.queue.push(fut);
         }
 
         while let Some(index) = self.done.pop() {
