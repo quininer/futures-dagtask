@@ -60,7 +60,7 @@ impl<T: Future> TaskGraph<T> {
         )
     }
 
-    fn walk<'a>(&'a mut self, index: Index) -> TaskWalker<'a, T> {
+    fn walk(&mut self, index: Index) -> TaskWalker<'_, T> {
         let walker = self.dag.walk(index);
         TaskWalker { dag: &mut self.dag, walker }
     }

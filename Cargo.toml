@@ -3,6 +3,7 @@ name = "futures-dagtask"
 version = "0.1.0"
 authors = ["quininer <quininer@live.com>"]
 edition = "2018"
+license = "MIT"
 
 [dependencies]
 futures = "0.1"
