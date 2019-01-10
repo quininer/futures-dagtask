@@ -9,12 +9,12 @@ use crate::graph::Graph;
 pub use crate::graph::Index;
 
 
-pub struct TaskGraph<T> {
+pub struct TaskGraph<T: Future> {
     dag: Graph<State<T>>,
-    root: Index,
+    pending: Vec<IndexFuture<T>>
 }
 
-enum State<T> {
+enum State<T: Future> {
     Pending {
         count: usize,
         task: T
@@ -22,33 +22,33 @@ enum State<T> {
     Running,
 }
 
-impl<T> Default for TaskGraph<T> {
+impl<T: Future> Default for TaskGraph<T> {
     fn default() -> TaskGraph<T> {
-        let mut dag = Graph::default();
-        let root = dag.add_node(State::Running);
-        TaskGraph { dag, root }
+        TaskGraph { dag: Graph::default(), pending: Vec::new() }
     }
 }
 
 impl<T: Future> TaskGraph<T> {
     pub fn add_task(&mut self, deps: &[Index], task: T) -> Index {
-        let index = self.dag.add_node(State::Pending { count: deps.len() | 1, task });
         if deps.is_empty() {
-            self.dag.add_edge(self.root, index);
+            let index = self.dag.add_node(State::Running);
+            self.pending.push(IndexFuture::new(index, task));
+            index
         } else {
+            let index = self.dag.add_node(State::Pending { count: deps.len(), task });
             for &parent in deps {
                 self.dag.add_edge(parent, index);
             }
+            index
         }
-        index
     }
 
     pub fn execute(mut self) -> (AddTask<T>, Execute<T>) {
         let mut queue = FuturesUnordered::new();
-        for fut in self.walk(self.root) {
+        for fut in self.pending.drain(..) {
             queue.push(fut);
         }
-        let (g1, g2) = BiLock::new((self, Vec::new()));
+        let (g1, g2) = BiLock::new(self);
         let (tx, rx) = oneshot::channel();
         (
             AddTask { inner: g1, tx },
@@ -63,24 +63,23 @@ impl<T: Future> TaskGraph<T> {
 }
 
 pub struct AddTask<T: Future> {
-    inner: BiLock<(TaskGraph<T>, Vec<IndexFuture<T>>)>,
+    inner: BiLock<TaskGraph<T>>,
     tx: oneshot::Sender<()>
 }
 
 impl<T: Future> AddTask<T> {
     pub fn add_task(&self, deps: &[Index], task: T) -> Async<Index> {
-        let mut inner = match self.inner.poll_lock() {
-            Async::Ready(inner) => inner,
+        let mut graph = match self.inner.poll_lock() {
+            Async::Ready(graph) => graph,
             Async::NotReady => return Async::NotReady
         };
-        let (graph, pending) = &mut *inner;
 
         let count = deps.iter()
             .filter(|&&i| graph.dag.contains(i))
             .count();
         if count == 0 {
             let index = graph.dag.add_node(State::Running);
-            pending.push(IndexFuture::new(index, task));
+            graph.pending.push(IndexFuture::new(index, task));
             Async::Ready(index)
         } else {
             let index = graph.dag.add_node(State::Pending { count, task });
@@ -97,7 +96,7 @@ impl<T: Future> AddTask<T> {
 }
 
 pub struct Execute<T: Future> {
-    inner: BiLock<(TaskGraph<T>, Vec<IndexFuture<T>>)>,
+    inner: BiLock<TaskGraph<T>>,
     queue: FuturesUnordered<IndexFuture<T>>,
     done: Vec<Index>,
     rx: oneshot::Receiver<()>
@@ -105,17 +104,16 @@ pub struct Execute<T: Future> {
 
 impl<T: Future> Execute<T> {
     fn enqueue(&mut self) -> Async<()> {
-        let mut inner = match self.inner.poll_lock() {
-            Async::Ready(inner) => inner,
+        let mut graph = match self.inner.poll_lock() {
+            Async::Ready(graph) => graph,
             Async::NotReady => return Async::NotReady
         };
-        let (graph, pending) = &mut *inner;
 
-        while let Some(fut) = pending.pop() {
+        for fut in graph.pending.drain(..) {
             self.queue.push(fut);
         }
 
-        while let Some(index) = self.done.pop() {
+        for index in self.done.drain(..) {
             for fut in graph.walk(index) {
                 self.queue.push(fut);
             }
