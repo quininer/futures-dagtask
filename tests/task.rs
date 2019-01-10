@@ -1,7 +1,7 @@
 use std::sync::{ Arc, Mutex };
 use futures::prelude::*;
 use futures::future;
-use futures_dagtask::TaskGraph;
+use futures_dagtask::{ TaskGraph, Index };
 
 macro_rules! unwrap_async {
     ( $e:expr ) => {
@@ -24,7 +24,7 @@ fn test_simple_dependent() {
     let output = exec.take(3)
         .wait()
         .filter_map(Result::ok)
-        .map(|(_, n)| n)
+        .map(|(_, n): (Index, _)| n)
         .collect::<Vec<_>>();
     assert_eq!(output, vec![0, 1, 2]);
 }
@@ -45,7 +45,7 @@ fn test_concurrent_dependent() {
     let output = exec.take(5)
         .wait()
         .filter_map(Result::ok)
-        .map(|(_, n)| n)
+        .map(|(_, n): (Index, _)| n)
         .collect::<Vec<_>>();
 
     let zero0 = find(&output, (0, 0));
@@ -74,7 +74,7 @@ fn test_concurrent_dependent2() {
         .take(3)
         .wait()
         .filter_map(Result::ok)
-        .map(|(_, n)| n)
+        .map(|(_, n): (Index, _)| n)
         .collect::<Vec<_>>();
 
     let zero0 = find(&output, (0, 0));
@@ -101,10 +101,26 @@ fn test_abort() {
 
     let output = exec.wait()
         .filter_map(Result::ok)
-        .map(|(_, n)| n)
+        .map(|(_, n): (Index, _)| n)
         .collect::<Vec<_>>();
 
     assert_eq!(output, vec![0u32, 1]);
+}
+
+#[test]
+fn test_custom_index() {
+    let mut graph = TaskGraph::<future::FutureResult<u32, ()>, u64>::default();
+    let zero = graph.add_task(&[], future::ok(0));
+    let one = graph.add_task(&[zero], future::ok(1));
+    let (add, exec) = graph.execute();
+    let _two = unwrap_async!(add.add_task(&[one], future::ok(2)));
+
+    let output = exec.take(3)
+        .wait()
+        .filter_map(Result::ok)
+        .map(|(_, n): (Index<u64>, _)| n)
+        .collect::<Vec<_>>();
+    assert_eq!(output, vec![0, 1, 2]);
 }
 
 fn find(output: &[(u32, u32)], target: (u32, u32)) -> usize {
