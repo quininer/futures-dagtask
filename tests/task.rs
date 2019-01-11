@@ -1,7 +1,7 @@
 use std::sync::{ Arc, Mutex };
 use futures::prelude::*;
 use futures::future;
-use futures_dagtask::{ TaskGraph, Index };
+use futures_dagtask::TaskGraph;
 
 macro_rules! unwrap_async {
     ( $e:expr ) => {
@@ -15,7 +15,7 @@ macro_rules! unwrap_async {
 
 #[test]
 fn test_simple_dependent() {
-    let mut graph = TaskGraph::default();
+    let mut graph = TaskGraph::new();
     let zero = graph.add_task(&[], future::ok::<u32, u32>(0));
     let one = graph.add_task(&[zero], future::ok(1));
     let (add, exec) = graph.execute();
@@ -24,14 +24,14 @@ fn test_simple_dependent() {
     let output = exec.take(3)
         .wait()
         .filter_map(Result::ok)
-        .map(|(_, n): (Index, _)| n)
+        .map(|(_, n)| n)
         .collect::<Vec<_>>();
     assert_eq!(output, vec![0, 1, 2]);
 }
 
 #[test]
 fn test_concurrent_dependent() {
-    let mut graph = TaskGraph::default();
+    let mut graph = TaskGraph::new();
     let zero0 = graph.add_task(&[], future::ok::<(u32, u32), ()>((0, 0)));
     let zero1 = graph.add_task(&[], future::ok((0, 1)));
     let one0 = graph.add_task(&[zero0], future::ok((1, 0)));
@@ -45,7 +45,7 @@ fn test_concurrent_dependent() {
     let output = exec.take(5)
         .wait()
         .filter_map(Result::ok)
-        .map(|(_, n): (Index, _)| n)
+        .map(|(_, n)| n)
         .collect::<Vec<_>>();
 
     let zero0 = find(&output, (0, 0));
@@ -60,7 +60,7 @@ fn test_concurrent_dependent() {
 
 #[test]
 fn test_concurrent_dependent2() {
-    let mut graph = TaskGraph::default();
+    let mut graph = TaskGraph::new();
     let zero0 = graph.add_task(&[], Box::new(future::ok::<(u32, u32), ()>((0, 0))) as Box<Future<Item=_, Error=_>>);
     let (add, exec) = graph.execute();
     let add = Arc::new(add);
@@ -74,7 +74,7 @@ fn test_concurrent_dependent2() {
         .take(3)
         .wait()
         .filter_map(Result::ok)
-        .map(|(_, n): (Index, _)| n)
+        .map(|(_, n)| n)
         .collect::<Vec<_>>();
 
     let zero0 = find(&output, (0, 0));
@@ -86,7 +86,7 @@ fn test_concurrent_dependent2() {
 
 #[test]
 fn test_abort() {
-    let mut graph = TaskGraph::default();
+    let mut graph = TaskGraph::new();
     let zero = graph.add_task(&[], Box::new(future::ok::<u32, ()>(0)) as Box<Future<Item=_, Error=_>>);
     let (add, exec) = graph.execute();
     let add = Arc::new(Mutex::new(Some(add)));
@@ -101,7 +101,7 @@ fn test_abort() {
 
     let output = exec.wait()
         .filter_map(Result::ok)
-        .map(|(_, n): (Index, _)| n)
+        .map(|(_, n)| n)
         .collect::<Vec<_>>();
 
     assert_eq!(output, vec![0u32, 1]);
@@ -118,7 +118,7 @@ fn test_custom_index() {
     let output = exec.take(3)
         .wait()
         .filter_map(Result::ok)
-        .map(|(_, n): (Index<u64>, _)| n)
+        .map(|(_, n)| n)
         .collect::<Vec<_>>();
     assert_eq!(output, vec![0, 1, 2]);
 }

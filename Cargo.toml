@@ -7,4 +7,3 @@ license = "MIT"
 
 [dependencies]
 futures = "0.1"
-indexmap = "1"

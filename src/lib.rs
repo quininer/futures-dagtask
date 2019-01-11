@@ -2,8 +2,9 @@ mod graph;
 
 use std::mem;
 use std::ops::Add;
-use std::hash::Hash;
+use std::hash::{ Hash, BuildHasher };
 use std::vec::IntoIter;
+use std::collections::hash_map::RandomState;
 use futures::stream::futures_unordered::FuturesUnordered;
 use futures::sync::{oneshot, BiLock};
 use futures::prelude::*;
@@ -11,8 +12,8 @@ use crate::graph::Graph;
 pub use crate::graph::Index;
 
 
-pub struct TaskGraph<T, I=u32> {
-    dag: Graph<State<T>, I>,
+pub struct TaskGraph<T, I=u32, S=RandomState> {
+    dag: Graph<State<T>, I, S>,
     pending: Vec<IndexFuture<T, I>>
 }
 
@@ -24,20 +25,29 @@ enum State<T> {
     Running,
 }
 
-impl<T, I> Default for TaskGraph<T, I>
-where I: Default + Hash + PartialEq + Eq
+impl<T, I, S> Default for TaskGraph<T, I, S>
+where
+    I: Default + Hash + PartialEq + Eq,
+    S: Default + BuildHasher
 {
-    fn default() -> TaskGraph<T, I> {
+    fn default() -> TaskGraph<T, I, S> {
         TaskGraph { dag: Graph::default(), pending: Vec::new() }
     }
 }
 
-impl<T, I> TaskGraph<T, I>
+impl<T> TaskGraph<T> {
+    pub fn new() -> Self {
+        TaskGraph::default()
+    }
+}
+
+impl<T, I, S> TaskGraph<T, I, S>
 where
     T: Future,
     for<'a> &'a I: Add<I>,
     for<'a> <&'a I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone
+    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    S: BuildHasher
 {
     pub fn add_task(&mut self, deps: &[Index<I>], task: T) -> Index<I> {
         if deps.is_empty() {
@@ -53,7 +63,7 @@ where
         }
     }
 
-    pub fn execute(mut self) -> (AddTask<T, I>, Execute<T, I>) {
+    pub fn execute(mut self) -> (AddTask<T, I, S>, Execute<T, I, S>) {
         let mut queue = FuturesUnordered::new();
         for fut in self.pending.drain(..) {
             queue.push(fut);
@@ -66,22 +76,23 @@ where
         )
     }
 
-    fn walk(&mut self, index: &Index<I>) -> TaskWalker<'_, T, I> {
+    fn walk(&mut self, index: &Index<I>) -> TaskWalker<'_, T, I, S> {
         let walker = self.dag.walk(index);
         TaskWalker { dag: &mut self.dag, walker }
     }
 }
 
-pub struct AddTask<T, I=u32> {
-    inner: BiLock<TaskGraph<T, I>>,
+pub struct AddTask<T, I=u32, S=RandomState> {
+    inner: BiLock<TaskGraph<T, I, S>>,
     tx: oneshot::Sender<()>
 }
 
-impl<T, I> AddTask<T, I>
+impl<T, I, S> AddTask<T, I, S>
 where
     for<'a> &'a I: Add<I>,
     for<'a> <&'a I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone
+    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    S: BuildHasher
 {
     pub fn add_task(&self, deps: &[Index<I>], task: T) -> Async<Index<I>> {
         let mut graph = match self.inner.poll_lock() {
@@ -110,19 +121,20 @@ where
     }
 }
 
-pub struct Execute<T, I=u32> {
-    inner: BiLock<TaskGraph<T, I>>,
+pub struct Execute<T, I=u32, S=RandomState> {
+    inner: BiLock<TaskGraph<T, I, S>>,
     queue: FuturesUnordered<IndexFuture<T, I>>,
     done: Vec<Index<I>>,
     rx: oneshot::Receiver<()>
 }
 
-impl<T, I> Execute<T, I>
+impl<T, I, S> Execute<T, I, S>
 where
     T: Future,
     for<'a> &'a I: Add<I>,
     for<'a> <&'a I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone
+    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    S: BuildHasher
 {
     fn enqueue(&mut self) -> Async<()> {
         let mut graph = match self.inner.poll_lock() {
@@ -145,12 +157,13 @@ where
     }
 }
 
-impl<F, I> Stream for Execute<F, I>
+impl<F, I, S> Stream for Execute<F, I, S>
 where
     F: Future,
     for<'i> &'i I: Add<I>,
     for<'i> <&'i I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone
+    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    S: BuildHasher
 {
     type Item = (Index<I>, F::Item);
     type Error = F::Error;
@@ -199,16 +212,17 @@ impl<F: Future, I: Clone> Future for IndexFuture<F, I> {
     }
 }
 
-struct TaskWalker<'a, T, I> {
-    dag: &'a mut Graph<State<T>, I>,
+struct TaskWalker<'a, T, I, S> {
+    dag: &'a mut Graph<State<T>, I, S>,
     walker: IntoIter<Index<I>>
 }
 
-impl<'a, T, I> Iterator for TaskWalker<'a, T, I>
+impl<'a, T, I, S> Iterator for TaskWalker<'a, T, I, S>
 where
     for<'i> &'i I: Add<I>,
     for<'i> <&'i I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone
+    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    S: BuildHasher
 {
     type Item = IndexFuture<T, I>;
 

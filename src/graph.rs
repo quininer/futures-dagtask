@@ -1,26 +1,32 @@
 use std::mem;
 use std::ops::Add;
-use std::hash::Hash;
+use std::hash::{ Hash, BuildHasher };
 use std::vec::IntoIter;
-use indexmap::IndexMap;
+use std::collections::HashMap;
+use std::collections::hash_map::RandomState;
 
 
-pub struct Graph<N, I=u32> {
-    map: IndexMap<Index<I>, (N, Vec<Index<I>>)>,
+pub struct Graph<N, I=u32, S=RandomState> {
+    map: HashMap<Index<I>, (N, Vec<Index<I>>), S>,
     last: Index<I>
 }
 
-impl<N, I: Default + Hash + PartialEq + Eq> Default for Graph<N, I> {
-    fn default() -> Graph<N, I> {
-        Graph { map: IndexMap::new(), last: Index(Default::default()) }
+impl<N, I, S> Default for Graph<N, I, S>
+where
+    I: Default + Hash + PartialEq + Eq,
+    S: Default + BuildHasher
+{
+    fn default() -> Graph<N, I, S> {
+        Graph { map: HashMap::default(), last: Index(Default::default()) }
     }
 }
 
-impl<N, I> Graph<N, I>
+impl<N, I, S> Graph<N, I, S>
 where
     for<'a> &'a I: Add<I>,
     for<'a> <&'a I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone
+    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    S: BuildHasher
 {
     pub fn add_node(&mut self, node: N) -> Index<I> {
         let index = self.last.next();
