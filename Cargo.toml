@@ -4,6 +4,13 @@ version = "0.1.0"
 authors = ["quininer <quininer@live.com>"]
 edition = "2018"
 license = "MIT"
+description = "DAG-based Task Queue"
+repository = "https://github.com/quininer/futures-dagtask"
+homepage = "https://github.com/quininer/futures-dagtask"
+documentation = "https://docs.rs/futures-dagtask"
+
+[badges]
+travis-ci = { repository = "quininer/tokio-rustls" }
 
 [dependencies]
 futures = "0.1"

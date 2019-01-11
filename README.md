@@ -9,10 +9,10 @@ that allows you to specify dependencies for concurrent tasks.
 use futures::future;
 use futures_dagtask::TaskGraph;
 
-let mut graph = TaskGraph::default();
+let mut graph = TaskGraph::new();
 let zero = graph.add_task(&[], future::ok::<u32, ()>(0));
 let one = graph.add_task(&[], future::ok::<u32, ()>(1));
-let two = graph.add_task(&[one], future::ok::<u32, ()>(2));
+let _two = graph.add_task(&[one], future::ok::<u32, ()>(2));
 
 let (_, exec) = graph.execute();
 

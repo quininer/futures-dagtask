@@ -1,0 +1,10 @@
+language: rust
+cache: cargo
+
+matrix:
+  include:
+    - rust: stable
+      os: linux
+
+script:
+    - cargo test
