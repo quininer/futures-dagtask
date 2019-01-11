@@ -72,7 +72,7 @@ where
         let (tx, rx) = oneshot::channel();
         (
             AddTask { inner: g1, tx },
-            Execute { inner: g2, done: Vec::new(), queue, rx }
+            Execute { inner: g2, done: Vec::new(), is_canceled: false, queue, rx }
         )
     }
 
@@ -125,7 +125,8 @@ pub struct Execute<T, I=u32, S=RandomState> {
     inner: BiLock<TaskGraph<T, I, S>>,
     queue: FuturesUnordered<IndexFuture<T, I>>,
     done: Vec<Index<I>>,
-    rx: oneshot::Receiver<()>
+    rx: oneshot::Receiver<()>,
+    is_canceled: bool
 }
 
 impl<T, I, S> Execute<T, I, S>
@@ -171,17 +172,23 @@ where
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         match self.rx.poll() {
             Ok(Async::NotReady) => (),
-            Ok(Async::Ready(())) | Err(_) => return Ok(Async::Ready(None))
+            Ok(Async::Ready(())) => return Ok(Async::Ready(None)),
+            Err(_) => {
+                self.is_canceled = true;
+            }
         }
 
-        // TODO keep poll ?
-        let _ = self.enqueue();
+        match self.enqueue() {
+            Async::Ready(()) => (),
+            Async::NotReady => return Ok(Async::NotReady)
+        }
 
         match self.queue.poll() {
             Ok(Async::Ready(Some((i, item)))) => {
                 self.done.push(i.clone());
                 Ok(Async::Ready(Some((i, item))))
             },
+            Ok(Async::Ready(None)) if self.is_canceled => Ok(Async::Ready(None)),
             Ok(Async::Ready(None)) | Ok(Async::NotReady) => Ok(Async::NotReady),
             Err(err) => Err(err)
         }

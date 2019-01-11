@@ -85,6 +85,25 @@ fn test_concurrent_dependent2() {
 }
 
 #[test]
+fn test_cancel() {
+    let exec = {
+        let mut graph = TaskGraph::new();
+        let zero = graph.add_task(&[], future::ok::<u32, u32>(0));
+        let one = graph.add_task(&[zero], future::ok(1));
+        let (add, exec) = graph.execute();
+        let _two = unwrap_async!(add.add_task(&[one], future::ok(2)));
+        exec
+    };
+
+    let output = exec
+        .wait()
+        .filter_map(Result::ok)
+        .map(|(_, n)| n)
+        .collect::<Vec<_>>();
+    assert_eq!(output, vec![0, 1, 2]);
+}
+
+#[test]
 fn test_abort() {
     let mut graph = TaskGraph::new();
     let zero = graph.add_task(&[], Box::new(future::ok::<u32, ()>(0)) as Box<Future<Item=_, Error=_>>);
