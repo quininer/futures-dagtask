@@ -14,3 +14,4 @@ travis-ci = { repository = "quininer/tokio-rustls" }
 
 [dependencies]
 futures = "0.1"
+num-traits = "0.2"

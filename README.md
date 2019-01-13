@@ -10,9 +10,9 @@ use futures::future;
 use futures_dagtask::TaskGraph;
 
 let mut graph = TaskGraph::new();
-let zero = graph.add_task(&[], future::ok::<u32, ()>(0));
-let one = graph.add_task(&[], future::ok::<u32, ()>(1));
-let _two = graph.add_task(&[one], future::ok::<u32, ()>(2));
+let zero = graph.add_task(&[], future::ok::<u32, ()>(0))?;
+let one = graph.add_task(&[], future::ok::<u32, ()>(1))?;
+let _two = graph.add_task(&[one], future::ok::<u32, ()>(2))?;
 
 let (_, exec) = graph.execute();
 

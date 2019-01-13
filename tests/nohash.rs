@@ -26,9 +26,9 @@ impl Hasher for NoHasher {
 #[test]
 fn test_nohash_graph() {
     let mut graph = TaskGraph::<future::FutureResult<u32, ()>, u32, NoHashBuilder>::default();
-    let one = graph.add_task(&[], future::ok(0));
-    let two = graph.add_task(&[one], future::ok(1));
-    graph.add_task(&[two], future::ok(2));
+    let one = graph.add_task(&[], future::ok(0)).unwrap();
+    let two = graph.add_task(&[one], future::ok(1)).unwrap();
+    graph.add_task(&[two], future::ok(2)).unwrap();
 
     let (_, exec) = graph.execute();
 

@@ -16,10 +16,10 @@ macro_rules! unwrap_async {
 #[test]
 fn test_simple_dependent() {
     let mut graph = TaskGraph::new();
-    let zero = graph.add_task(&[], future::ok::<u32, u32>(0));
-    let one = graph.add_task(&[zero], future::ok(1));
+    let zero = graph.add_task(&[], future::ok::<u32, u32>(0)).unwrap();
+    let one = graph.add_task(&[zero], future::ok(1)).unwrap();
     let (add, exec) = graph.execute();
-    let _two = unwrap_async!(add.add_task(&[one], future::ok(2)));
+    let _two = unwrap_async!(add.add_task(&[one], future::ok(2))).unwrap();
 
     let output = exec.take(3)
         .wait()
@@ -32,15 +32,15 @@ fn test_simple_dependent() {
 #[test]
 fn test_concurrent_dependent() {
     let mut graph = TaskGraph::new();
-    let zero0 = graph.add_task(&[], future::ok::<(u32, u32), ()>((0, 0)));
-    let zero1 = graph.add_task(&[], future::ok((0, 1)));
-    let one0 = graph.add_task(&[zero0], future::ok((1, 0)));
-    let _one1 = graph.add_task(&[zero0], future::ok((1, 1)));
+    let zero0 = graph.add_task(&[], future::ok::<(u32, u32), ()>((0, 0))).unwrap();
+    let zero1 = graph.add_task(&[], future::ok((0, 1))).unwrap();
+    let one0 = graph.add_task(&[zero0], future::ok((1, 0))).unwrap();
+    let _one1 = graph.add_task(&[zero0], future::ok((1, 1))).unwrap();
     let (add, exec) = graph.execute();
     let _two0 = unwrap_async!(add.add_task(
         &[zero1, one0],
         future::ok((2, 0))
-    ));
+    )).unwrap();
 
     let output = exec.take(5)
         .wait()
@@ -61,14 +61,14 @@ fn test_concurrent_dependent() {
 #[test]
 fn test_concurrent_dependent2() {
     let mut graph = TaskGraph::new();
-    let zero0 = graph.add_task(&[], Box::new(future::ok::<(u32, u32), ()>((0, 0))) as Box<Future<Item=_, Error=_>>);
+    let zero0 = graph.add_task(&[], Box::new(future::ok::<(u32, u32), ()>((0, 0))) as Box<Future<Item=_, Error=_>>).unwrap();
     let (add, exec) = graph.execute();
     let add = Arc::new(add);
     let add2 = add.clone();
     let _zero1 = unwrap_async!(add.add_task(&[], Box::new(future::lazy(move || {
-        let _one0 = unwrap_async!(add2.add_task(&[zero0], Box::new(future::ok((1u32, 0u32))) as Box<_>));
+        let _one0 = unwrap_async!(add2.add_task(&[zero0], Box::new(future::ok((1u32, 0u32))) as Box<_>)).unwrap();
         future::ok((0u32, 1u32))
-    })) as Box<_>));
+    })) as Box<_>)).unwrap();
 
     let output = exec
         .take(3)
@@ -88,10 +88,10 @@ fn test_concurrent_dependent2() {
 fn test_cancel() {
     let exec = {
         let mut graph = TaskGraph::new();
-        let zero = graph.add_task(&[], future::ok::<u32, u32>(0));
-        let one = graph.add_task(&[zero], future::ok(1));
+        let zero = graph.add_task(&[], future::ok::<u32, u32>(0)).unwrap();
+        let one = graph.add_task(&[zero], future::ok(1)).unwrap();
         let (add, exec) = graph.execute();
-        let _two = unwrap_async!(add.add_task(&[one], future::ok(2)));
+        let _two = unwrap_async!(add.add_task(&[one], future::ok(2))).unwrap();
         exec
     };
 
@@ -106,7 +106,7 @@ fn test_cancel() {
 #[test]
 fn test_abort() {
     let mut graph = TaskGraph::new();
-    let zero = graph.add_task(&[], Box::new(future::ok::<u32, ()>(0)) as Box<Future<Item=_, Error=_>>);
+    let zero = graph.add_task(&[], Box::new(future::ok::<u32, ()>(0)) as Box<Future<Item=_, Error=_>>).unwrap();
     let (add, exec) = graph.execute();
     let add = Arc::new(Mutex::new(Some(add)));
     let add2 = add.clone();
@@ -115,7 +115,7 @@ fn test_abort() {
         unwrap_async!(add.lock().unwrap().as_ref().unwrap().add_task(&[zero], Box::new(future::lazy(move || {
             add2.lock().unwrap().take().unwrap().abort();
             future::ok(1u32)
-        })) as Box<_>));
+        })) as Box<_>)).unwrap();
     }
 
     let output = exec.wait()
@@ -129,10 +129,10 @@ fn test_abort() {
 #[test]
 fn test_custom_index() {
     let mut graph = TaskGraph::<future::FutureResult<u32, ()>, u64>::default();
-    let zero = graph.add_task(&[], future::ok(0));
-    let one = graph.add_task(&[zero], future::ok(1));
+    let zero = graph.add_task(&[], future::ok(0)).unwrap();
+    let one = graph.add_task(&[zero], future::ok(1)).unwrap();
     let (add, exec) = graph.execute();
-    let _two = unwrap_async!(add.add_task(&[one], future::ok(2)));
+    let _two = unwrap_async!(add.add_task(&[one], future::ok(2))).unwrap();
 
     let output = exec.take(3)
         .wait()

@@ -1,10 +1,10 @@
 mod graph;
 
-use std::mem;
-use std::ops::Add;
+use std::{ fmt, mem, error };
 use std::hash::{ Hash, BuildHasher };
 use std::vec::IntoIter;
 use std::collections::hash_map::RandomState;
+use num_traits::{ CheckedAdd, One };
 use futures::stream::futures_unordered::FuturesUnordered;
 use futures::sync::{oneshot, BiLock};
 use futures::prelude::*;
@@ -44,22 +44,40 @@ impl<T> TaskGraph<T> {
 impl<T, I, S> TaskGraph<T, I, S>
 where
     T: Future,
-    for<'a> &'a I: Add<I>,
-    for<'a> <&'a I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone,
     S: BuildHasher
 {
-    pub fn add_task(&mut self, deps: &[Index<I>], task: T) -> Index<I> {
-        if deps.is_empty() {
-            let index = self.dag.add_node(State::Running);
-            self.pending.push(IndexFuture::new(index.clone(), task));
-            index
-        } else {
-            let index = self.dag.add_node(State::Pending { count: deps.len(), task });
-            for parent in deps {
-                self.dag.add_edge(parent, index.clone());
+    pub fn add_task(&mut self, deps: &[Index<I>], task: T) -> Result<Index<I>, Error<T>> {
+        let mut count = 0;
+        for dep in deps {
+            if dep >= &self.dag.last {
+                return Err(Error::WouldCycle(task));
             }
-            index
+
+            if self.dag.contains(dep) {
+                count += 1;
+            }
+        }
+
+        if count == 0 {
+            match self.dag.add_node(State::Running) {
+                Ok(index) => {
+                    self.pending.push(IndexFuture::new(index.clone(), task));
+                    Ok(index)
+                },
+                Err(_) => Err(Error::IndexExhausted(task))
+            }
+        } else {
+            match self.dag.add_node(State::Pending { count, task }) {
+                Ok(index) => {
+                    for parent in deps {
+                        self.dag.add_edge(parent, index.clone());
+                    }
+                    Ok(index)
+                },
+                Err(State::Pending { task, .. }) => Err(Error::IndexExhausted(task)),
+                Err(State::Running) => unreachable!()
+            }
         }
     }
 
@@ -89,30 +107,14 @@ pub struct AddTask<T, I=u32, S=RandomState> {
 
 impl<T, I, S> AddTask<T, I, S>
 where
-    for<'a> &'a I: Add<I>,
-    for<'a> <&'a I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    T: Future,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone,
     S: BuildHasher
 {
-    pub fn add_task(&self, deps: &[Index<I>], task: T) -> Async<Index<I>> {
-        let mut graph = match self.inner.poll_lock() {
-            Async::Ready(graph) => graph,
-            Async::NotReady => return Async::NotReady
-        };
-
-        let count = deps.iter()
-            .filter(|&i| graph.dag.contains(i))
-            .count();
-        if count == 0 {
-            let index = graph.dag.add_node(State::Running);
-            graph.pending.push(IndexFuture::new(index.clone(), task));
-            Async::Ready(index)
-        } else {
-            let index = graph.dag.add_node(State::Pending { count, task });
-            for parent in deps {
-                graph.dag.add_edge(parent, index.clone());
-            }
-            Async::Ready(index)
+    pub fn add_task(&self, deps: &[Index<I>], task: T) -> Async<Result<Index<I>, Error<T>>> {
+        match self.inner.poll_lock() {
+            Async::Ready(mut graph) => Async::Ready(graph.add_task(deps, task)),
+            Async::NotReady => Async::NotReady
         }
     }
 
@@ -132,9 +134,7 @@ pub struct Execute<T, I=u32, S=RandomState> {
 impl<T, I, S> Execute<T, I, S>
 where
     T: Future,
-    for<'a> &'a I: Add<I>,
-    for<'a> <&'a I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone,
     S: BuildHasher
 {
     fn enqueue(&mut self) -> Async<()> {
@@ -161,9 +161,7 @@ where
 impl<F, I, S> Stream for Execute<F, I, S>
 where
     F: Future,
-    for<'i> &'i I: Add<I>,
-    for<'i> <&'i I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone,
     S: BuildHasher
 {
     type Item = (Index<I>, F::Item);
@@ -226,9 +224,7 @@ struct TaskWalker<'a, T, I, S> {
 
 impl<'a, T, I, S> Iterator for TaskWalker<'a, T, I, S>
 where
-    for<'i> &'i I: Add<I>,
-    for<'i> <&'i I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + Clone,
     S: BuildHasher
 {
     type Item = IndexFuture<T, I>;
@@ -245,7 +241,7 @@ where
             }
 
             match state {
-                State::Pending { count, .. } if *count == 0 => (),
+                State::Pending { count: 0, .. } => (),
                 _ => continue
             }
 
@@ -255,5 +251,34 @@ where
         }
 
         None
+    }
+}
+
+pub enum Error<T> {
+    WouldCycle(T),
+    IndexExhausted(T)
+}
+
+impl<T> fmt::Debug for Error<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::WouldCycle(_) => f.debug_struct("WouldCycle").finish(),
+            Error::IndexExhausted(_) => f.debug_struct("IndexExhausted").finish()
+        }
+    }
+}
+
+impl<T> fmt::Display for Error<T> {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            Error::WouldCycle(_) => write!(f, "would cycle"),
+            Error::IndexExhausted(_) => write!(f, "index exhausted")
+        }
+    }
+}
+
+impl<T> error::Error for Error<T> {
+    fn description(&self) -> &str {
+        "error"
     }
 }

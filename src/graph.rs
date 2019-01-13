@@ -1,14 +1,14 @@
 use std::mem;
-use std::ops::Add;
 use std::hash::{ Hash, BuildHasher };
 use std::vec::IntoIter;
 use std::collections::HashMap;
 use std::collections::hash_map::RandomState;
+use num_traits::{ CheckedAdd, One };
 
 
 pub struct Graph<N, I=u32, S=RandomState> {
     map: HashMap<Index<I>, (N, Vec<Index<I>>), S>,
-    last: Index<I>
+    pub(crate) last: Index<I>
 }
 
 impl<N, I, S> Default for Graph<N, I, S>
@@ -23,15 +23,17 @@ where
 
 impl<N, I, S> Graph<N, I, S>
 where
-    for<'a> &'a I: Add<I>,
-    for<'a> <&'a I as Add<I>>::Output: Into<I>,
-    I: From<u32> + Hash + PartialEq + Eq + Clone,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + Clone,
     S: BuildHasher
 {
-    pub fn add_node(&mut self, node: N) -> Index<I> {
-        let index = self.last.next();
-        self.map.insert(index.clone(), (node, Vec::new()));
-        index
+    pub fn add_node(&mut self, node: N) -> Result<Index<I>, N> {
+        match self.last.next() {
+            Some(index) => {
+                self.map.insert(index.clone(), (node, Vec::new()));
+                Ok(index)
+            },
+            None => Err(node)
+        }
     }
 
     pub fn contains(&self, index: &Index<I>) -> bool {
@@ -55,8 +57,9 @@ where
 
     pub fn walk(&mut self, index: &Index<I>) -> IntoIter<Index<I>> {
         self.map.get_mut(index)
-            .map(|(_, arr)| mem::replace(arr, Vec::new()).into_iter())
-            .unwrap_or_else(|| Vec::new().into_iter())
+            .map(|(_, arr)| mem::replace(arr, Vec::new()))
+            .unwrap_or_else(Vec::new)
+            .into_iter()
     }
 }
 
@@ -64,12 +67,9 @@ where
 pub struct Index<I=u32>(I);
 
 impl<I> Index<I>
-where
-    for<'a> &'a I: Add<I>,
-    for<'a> <&'a I as Add<I>>::Output: Into<I>,
-    I: From<u32>
+where I: CheckedAdd + One
 {
-    fn next(&mut self) -> Index<I> {
-        mem::replace(self, Index(self.0.add(I::from(1)).into()))
+    fn next(&mut self) -> Option<Index<I>> {
+        Some(mem::replace(self, Index(self.0.checked_add(&I::one())?)))
     }
 }
