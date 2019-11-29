@@ -1,6 +1,7 @@
 use std::hash::{ Hasher, BuildHasherDefault };
-use futures::prelude::*;
 use futures::future;
+use futures::prelude::*;
+use futures::executor::LocalPool;
 use futures_dagtask::TaskGraph;
 
 
@@ -25,17 +26,17 @@ impl Hasher for NoHasher {
 
 #[test]
 fn test_nohash_graph() {
-    let mut graph = TaskGraph::<future::FutureResult<u32, ()>, u32, NoHashBuilder>::default();
-    let one = graph.add_task(&[], future::ok(0)).unwrap();
-    let two = graph.add_task(&[one], future::ok(1)).unwrap();
-    graph.add_task(&[two], future::ok(2)).unwrap();
+    let fut = async {
+        let mut graph = TaskGraph::<future::Ready<u32>, u32, NoHashBuilder>::default();
+        let one = graph.add_task(&[], future::ready(0)).unwrap();
+        let two = graph.add_task(&[one], future::ready(1)).unwrap();
+        graph.add_task(&[two], future::ready(2)).unwrap();
 
-    let (_, exec) = graph.execute();
+        let (_, exec) = graph.execute();
+        exec.take(3).map(|(_, n)| n).collect::<Vec<_>>().await
+    };
 
-    let output = exec.take(3)
-        .wait()
-        .filter_map(Result::ok)
-        .map(|(_, n)| n)
-        .collect::<Vec<_>>();
+    let output = LocalPool::new()
+        .run_until(fut);
     assert_eq!(output, vec![0, 1, 2]);
 }

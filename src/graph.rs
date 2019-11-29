@@ -6,7 +6,7 @@ use std::collections::hash_map::RandomState;
 use num_traits::{ CheckedAdd, One };
 
 
-pub struct Graph<N, I=u32, S=RandomState> {
+pub struct Graph<N, I = u32, S = RandomState> {
     map: HashMap<Index<I>, (N, Vec<Index<I>>), S>,
     pub(crate) last: Index<I>
 }
@@ -64,11 +64,12 @@ where
 }
 
 #[derive(Hash, PartialEq, Eq, PartialOrd, Ord, Copy, Clone, Debug)]
-pub struct Index<I=u32>(I);
+pub struct Index<I = u32>(I);
 
 impl<I> Index<I>
 where I: CheckedAdd + One
 {
+    #[inline]
     fn next(&mut self) -> Option<Index<I>> {
         Some(mem::replace(self, Index(self.0.checked_add(&I::one())?)))
     }

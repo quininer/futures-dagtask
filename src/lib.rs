@@ -3,16 +3,20 @@ mod graph;
 use std::{ fmt, mem, error };
 use std::hash::{ Hash, BuildHasher };
 use std::vec::IntoIter;
+use std::pin::Pin;
+use std::marker::Unpin;
+use std::task::{ Context, Poll };
 use std::collections::hash_map::RandomState;
 use num_traits::{ CheckedAdd, One };
 use futures::stream::futures_unordered::FuturesUnordered;
-use futures::sync::{oneshot, BiLock};
+use futures::channel::oneshot;
+use futures::lock::BiLock;
 use futures::prelude::*;
 use crate::graph::Graph;
 pub use crate::graph::Index;
 
 
-pub struct TaskGraph<T, I=u32, S=RandomState> {
+pub struct TaskGraph<T, I = u32, S = RandomState> {
     dag: Graph<State<T>, I, S>,
     pending: Vec<IndexFuture<T, I>>
 }
@@ -28,7 +32,7 @@ enum State<T> {
 impl<T, I, S> Default for TaskGraph<T, I, S>
 where
     I: Default + Hash + PartialEq + Eq,
-    S: Default + BuildHasher
+    S: Default + BuildHasher + Unpin
 {
     fn default() -> TaskGraph<T, I, S> {
         TaskGraph { dag: Graph::default(), pending: Vec::new() }
@@ -43,9 +47,9 @@ impl<T> TaskGraph<T> {
 
 impl<T, I, S> TaskGraph<T, I, S>
 where
-    T: Future,
-    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone,
-    S: BuildHasher
+    T: Future + Unpin,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone + Unpin,
+    S: BuildHasher + Unpin
 {
     pub fn add_task(&mut self, deps: &[Index<I>], task: T) -> Result<Index<I>, Error<T>> {
         let mut count = 0;
@@ -65,7 +69,7 @@ where
                     self.pending.push(IndexFuture::new(index.clone(), task));
                     Ok(index)
                 },
-                Err(_) => Err(Error::IndexExhausted(task))
+                Err(_) => Err(Error::Exhausted(task))
             }
         } else {
             match self.dag.add_node(State::Pending { count, task }) {
@@ -75,21 +79,21 @@ where
                     }
                     Ok(index)
                 },
-                Err(State::Pending { task, .. }) => Err(Error::IndexExhausted(task)),
+                Err(State::Pending { task, .. }) => Err(Error::Exhausted(task)),
                 Err(State::Running) => unreachable!()
             }
         }
     }
 
-    pub fn execute(mut self) -> (AddTask<T, I, S>, Execute<T, I, S>) {
-        let mut queue = FuturesUnordered::new();
+    pub fn execute(mut self) -> (Sender<T, I, S>, Execute<T, I, S>) {
+        let queue = FuturesUnordered::new();
         for fut in self.pending.drain(..) {
             queue.push(fut);
         }
         let (g1, g2) = BiLock::new(self);
         let (tx, rx) = oneshot::channel();
         (
-            AddTask { inner: g1, tx },
+            Sender { inner: g1, tx },
             Execute { inner: g2, done: Vec::new(), is_canceled: false, queue, rx }
         )
     }
@@ -100,21 +104,24 @@ where
     }
 }
 
-pub struct AddTask<T, I=u32, S=RandomState> {
+pub struct Sender<T, I=u32, S=RandomState> {
     inner: BiLock<TaskGraph<T, I, S>>,
     tx: oneshot::Sender<()>
 }
 
-impl<T, I, S> AddTask<T, I, S>
+impl<T, I, S> Sender<T, I, S>
 where
-    T: Future,
-    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone,
-    S: BuildHasher
+    T: Future + Unpin,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone + Unpin,
+    S: BuildHasher + Unpin
 {
-    pub fn add_task(&self, deps: &[Index<I>], task: T) -> Async<Result<Index<I>, Error<T>>> {
-        match self.inner.poll_lock() {
-            Async::Ready(mut graph) => Async::Ready(graph.add_task(deps, task)),
-            Async::NotReady => Async::NotReady
+    #[inline]
+    pub fn add_task<'a>(&'a self, deps: &'a [Index<I>], task: T)
+        -> impl Future<Output = Result<Index<I>, Error<T>>> + 'a
+    {
+        async move {
+            let mut graph = self.inner.lock().await;
+            graph.add_task(deps, task)
         }
     }
 
@@ -133,14 +140,14 @@ pub struct Execute<T, I=u32, S=RandomState> {
 
 impl<T, I, S> Execute<T, I, S>
 where
-    T: Future,
-    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone,
-    S: BuildHasher
+    T: Future + Unpin,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone + Unpin,
+    S: BuildHasher + Unpin
 {
-    fn enqueue(&mut self) -> Async<()> {
-        let mut graph = match self.inner.poll_lock() {
-            Async::Ready(graph) => graph,
-            Async::NotReady => return Async::NotReady
+    fn enqueue(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        let mut graph = match self.inner.poll_lock(cx) {
+            Poll::Ready(graph) => graph,
+            Poll::Pending => return Poll::Pending
         };
 
         for fut in graph.pending.drain(..) {
@@ -154,41 +161,38 @@ where
             graph.dag.remove_node(&index);
         }
 
-        Async::Ready(())
+        Poll::Ready(())
     }
 }
 
 impl<F, I, S> Stream for Execute<F, I, S>
 where
-    F: Future,
-    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone,
-    S: BuildHasher
+    F: Future + Unpin,
+    I: CheckedAdd + One + Hash + PartialEq + Eq + PartialOrd + Clone + Unpin,
+    S: BuildHasher + Unpin
 {
-    type Item = (Index<I>, F::Item);
-    type Error = F::Error;
+    type Item = (Index<I>, F::Output);
 
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        match self.rx.poll() {
-            Ok(Async::NotReady) => (),
-            Ok(Async::Ready(())) => return Ok(Async::Ready(None)),
-            Err(_) => {
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.rx).poll(cx) {
+            Poll::Pending => (),
+            Poll::Ready(Ok(())) => return Poll::Ready(None),
+            Poll::Ready(Err(_)) => {
                 self.is_canceled = true;
             }
         }
 
-        match self.enqueue() {
-            Async::Ready(()) => (),
-            Async::NotReady => return Ok(Async::NotReady)
+        if let Poll::Pending = self.enqueue(cx) {
+            return Poll::Pending;
         }
 
-        match self.queue.poll() {
-            Ok(Async::Ready(Some((i, item)))) => {
+        match Pin::new(&mut self.queue).poll_next(cx) {
+            Poll::Ready(Some((i, item))) => {
                 self.done.push(i.clone());
-                Ok(Async::Ready(Some((i, item))))
+                Poll::Ready(Some((i, item)))
             },
-            Ok(Async::Ready(None)) if self.is_canceled => Ok(Async::Ready(None)),
-            Ok(Async::Ready(None)) | Ok(Async::NotReady) => Ok(Async::NotReady),
-            Err(err) => Err(err)
+            Poll::Ready(None) if self.is_canceled => Poll::Ready(None),
+            Poll::Ready(None) | Poll::Pending => Poll::Pending
         }
     }
 }
@@ -204,15 +208,19 @@ impl<F, I> IndexFuture<F, I> {
     }
 }
 
-impl<F: Future, I: Clone> Future for IndexFuture<F, I> {
-    type Item = (Index<I>, F::Item);
-    type Error = F::Error;
+impl<F, I> Future for IndexFuture<F, I>
+where
+    F: Future + Unpin,
+    I: Clone + Unpin
+{
+    type Output = (Index<I>, F::Output);
 
-    fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        match self.fut.poll() {
-            Ok(Async::Ready(item)) => Ok(Async::Ready((self.index.clone(), item))),
-            Ok(Async::NotReady) => Ok(Async::NotReady),
-            Err(err) => Err(err)
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let IndexFuture { index, fut } = self.get_mut();
+
+        match Pin::new(fut).poll(cx) {
+            Poll::Ready(item) => Poll::Ready((index.clone(), item)),
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -225,7 +233,7 @@ struct TaskWalker<'a, T, I, S> {
 impl<'a, T, I, S> Iterator for TaskWalker<'a, T, I, S>
 where
     I: CheckedAdd + One + Hash + PartialEq + Eq + Clone,
-    S: BuildHasher
+    S: BuildHasher + Unpin
 {
     type Item = IndexFuture<T, I>;
 
@@ -256,14 +264,14 @@ where
 
 pub enum Error<T> {
     WouldCycle(T),
-    IndexExhausted(T)
+    Exhausted(T)
 }
 
 impl<T> fmt::Debug for Error<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::WouldCycle(_) => f.debug_struct("WouldCycle").finish(),
-            Error::IndexExhausted(_) => f.debug_struct("IndexExhausted").finish()
+            Error::Exhausted(_) => f.debug_struct("Exhausted").finish()
         }
     }
 }
@@ -272,13 +280,9 @@ impl<T> fmt::Display for Error<T> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             Error::WouldCycle(_) => write!(f, "would cycle"),
-            Error::IndexExhausted(_) => write!(f, "index exhausted")
+            Error::Exhausted(_) => write!(f, "index exhausted")
         }
     }
 }
 
-impl<T> error::Error for Error<T> {
-    fn description(&self) -> &str {
-        "error"
-    }
-}
+impl<T> error::Error for Error<T> {}

@@ -1,6 +1,6 @@
 [package]
 name = "futures-dagtask"
-version = "0.2.0"
+version = "0.3.0"
 authors = ["quininer <quininer@live.com>"]
 edition = "2018"
 license = "MIT"
@@ -10,8 +10,8 @@ homepage = "https://github.com/quininer/futures-dagtask"
 documentation = "https://docs.rs/futures-dagtask"
 
 [badges]
-travis-ci = { repository = "quininer/tokio-rustls" }
+travis-ci = { repository = "quininer/futures-dagtask" }
 
 [dependencies]
-futures = "0.1"
+futures = { version = "0.3", features = [ "bilock", "unstable" ] }
 num-traits = "0.2"

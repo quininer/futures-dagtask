@@ -10,13 +10,15 @@ use futures::future;
 use futures_dagtask::TaskGraph;
 
 let mut graph = TaskGraph::new();
-let zero = graph.add_task(&[], future::ok::<u32, ()>(0))?;
-let one = graph.add_task(&[], future::ok::<u32, ()>(1))?;
-let _two = graph.add_task(&[one], future::ok::<u32, ()>(2))?;
+let zero = graph.add_task(&[], future::ready::<u32>(0))?;
+let one = graph.add_task(&[], future::ready::<u32>(1))?;
+let two = graph.add_task(&[one], future::ready::<u32>(2))?;
 
-let (_, exec) = graph.execute();
+let (add, exec) = graph.execute();
 
 // spawn(exec.for_each(drop));
+
+let _three = add.add_task(&[two], future::ready(3)).await?;
 ```
 
 In this example, `zero` and `one` will be executed concurrently,
